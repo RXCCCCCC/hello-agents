@@ -1,7 +1,3 @@
-# 增加HF_ENDPOINT，避免Connection aborted. 
-import os
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 

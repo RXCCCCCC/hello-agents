@@ -6,6 +6,84 @@ import os
 from serpapi import SerpApiClient
 from typing import Dict, Any
 
+
+def _build_search_params(query: str, api_key: str) -> list[dict[str, str]]:
+    """
+    Build search parameter candidates.
+
+    We avoid hard-coding locale parameters because some combinations such as
+    gl=cn/hl=zh-cn can cause SerpApi to return no results for otherwise valid
+    queries. Locale can still be provided through environment variables.
+    """
+    base_params = {
+        "engine": "google",
+        "q": query,
+        "api_key": api_key,
+    }
+
+    localized_params = dict(base_params)
+    gl = os.getenv("SERPAPI_GL")
+    hl = os.getenv("SERPAPI_HL")
+    if gl:
+        localized_params["gl"] = gl
+    if hl:
+        localized_params["hl"] = hl
+
+    candidates = [base_params]
+    if localized_params != base_params:
+        candidates.insert(0, localized_params)
+    return candidates
+
+
+def _extract_search_summary(results: Dict[str, Any]) -> str | None:
+    answer_box_list = results.get("answer_box_list") or []
+    if isinstance(answer_box_list, list):
+        direct_answers = []
+        for item in answer_box_list:
+            if isinstance(item, dict):
+                for key in ("answer", "snippet", "title"):
+                    value = item.get(key)
+                    if value:
+                        direct_answers.append(str(value))
+                        break
+            elif item:
+                direct_answers.append(str(item))
+        if direct_answers:
+            return "\n".join(direct_answers)
+
+    answer_box = results.get("answer_box") or {}
+    for key in ("answer", "snippet", "title"):
+        value = answer_box.get(key)
+        if isinstance(value, list) and value:
+            return "\n".join(str(item) for item in value)
+        if value:
+            return str(value)
+
+    knowledge_graph = results.get("knowledge_graph") or {}
+    if knowledge_graph.get("description"):
+        return str(knowledge_graph["description"])
+
+    organic_results = results.get("organic_results") or []
+    if organic_results:
+        snippets = []
+        for i, res in enumerate(organic_results[:3]):
+            lines = []
+            title = res.get("title")
+            snippet = res.get("snippet")
+            link = res.get("link")
+            if title:
+                lines.append(f"[{i+1}] {title}")
+            if snippet:
+                lines.append(str(snippet))
+            if link:
+                lines.append(str(link))
+            if lines:
+                snippets.append("\n".join(lines))
+        if snippets:
+            return "\n\n".join(snippets)
+
+    return None
+
 def search(query: str) -> str:
     """
     一个基于SerpApi的实战网页搜索引擎工具。
@@ -17,38 +95,26 @@ def search(query: str) -> str:
         if not api_key:
             return "错误：SERPAPI_API_KEY 未在 .env 文件中配置。"
 
-        params = {
-            "engine": "google",
-            "q": query,
-            "api_key": api_key,
-            "gl": "cn",  # 国家代码
-            "hl": "zh-cn", # 语言代码
-        }
-        
-        client = SerpApiClient(params)
-        results = client.get_dict()
-        
-        # 智能解析：优先寻找最直接的答案
-        if "answer_box_list" in results:
-            return "\n".join(results["answer_box_list"])
-        if "answer_box" in results and "answer" in results["answer_box"]:
-            return results["answer_box"]["answer"]
-        if "knowledge_graph" in results and "description" in results["knowledge_graph"]:
-            return results["knowledge_graph"]["description"]
-        if "organic_results" in results and results["organic_results"]:
-            # 如果没有直接答案，则返回前三个有机结果的摘要
-            snippets = [
-                f"[{i+1}] {res.get('title', '')}\n{res.get('snippet', '')}"
-                for i, res in enumerate(results["organic_results"][:3])
-            ]
-            return "\n\n".join(snippets)
-        
+        last_error = None
+        for params in _build_search_params(query, api_key):
+            client = SerpApiClient(params)
+            results = client.get_dict()
+
+            if results.get("error"):
+                last_error = results["error"]
+                continue
+
+            summary = _extract_search_summary(results)
+            if summary:
+                return summary
+
+        if last_error:
+            return f"搜索服务返回错误：{last_error}"
+
         return f"对不起，没有找到关于 '{query}' 的信息。"
 
     except Exception as e:
         return f"搜索时发生错误: {e}"
-    
-from typing import Dict, Any
 
 class ToolExecutor:
     """
